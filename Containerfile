@@ -54,7 +54,9 @@ RUN --mount=from=uv_stage,source=/uv,target=/bin/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     umask 002 && \
+    echo "UV_SYNC_EXTRA_ARGS=${UV_SYNC_EXTRA_ARGS}" && \
     UV_SYNC_ARGS="--frozen --no-install-project --no-dev --extra easyocr --extra rapidocr" && \
+    echo "Running: uv sync ${UV_SYNC_ARGS} ${UV_SYNC_EXTRA_ARGS}" && \
     uv sync ${UV_SYNC_ARGS} ${UV_SYNC_EXTRA_ARGS}
 
 # Models are mounted via PVC at runtime - skip downloading to reduce image size
@@ -73,7 +75,9 @@ RUN --mount=from=uv_stage,source=/uv,target=/bin/uv \
     --mount=type=cache,target=/opt/app-root/src/.cache/uv,uid=1001 \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    umask 002 && uv sync --frozen --no-dev --extra easyocr --extra rapidocr ${UV_SYNC_EXTRA_ARGS}
+    umask 002 && \
+    echo "Running final sync: uv sync --frozen --no-dev --extra easyocr --extra rapidocr ${UV_SYNC_EXTRA_ARGS}" && \
+    uv sync --frozen --no-dev --extra easyocr --extra rapidocr ${UV_SYNC_EXTRA_ARGS}
 
 # Install custom docling wheel (overrides the PyPI version)
 RUN --mount=from=uv_stage,source=/uv,target=/bin/uv \
