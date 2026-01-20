@@ -90,7 +90,7 @@ jobs:
           images: ${{ env.GHCR_REGISTRY }}/${{ inputs.ghcr_image_name }}
           tags: |
             type=raw,value=latest
-            type=raw,value=v1.0.1
+            type=raw,value=v1.0.2
 
       # # Local test
       # - name: Set metadata outputs for local testing ## comment out Free up space, Log in to cr, Cache Docker, Extract metadata, and quay blocks and run act
