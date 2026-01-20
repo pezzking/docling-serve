@@ -55,7 +55,7 @@ RUN --mount=from=uv_stage,source=/uv,target=/bin/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     umask 002 && \
     echo "UV_SYNC_EXTRA_ARGS=${UV_SYNC_EXTRA_ARGS}" && \
-    UV_SYNC_ARGS="--frozen --no-install-project --no-dev --extra easyocr --extra rapidocr" && \
+    UV_SYNC_ARGS="--frozen --no-install-project --no-dev --extra ui --extra easyocr --extra rapidocr" && \
     echo "Running: uv sync ${UV_SYNC_ARGS} ${UV_SYNC_EXTRA_ARGS}" && \
     uv sync ${UV_SYNC_ARGS} ${UV_SYNC_EXTRA_ARGS}
 
@@ -76,8 +76,8 @@ RUN --mount=from=uv_stage,source=/uv,target=/bin/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     umask 002 && \
-    echo "Running final sync: uv sync --frozen --no-dev --extra easyocr --extra rapidocr ${UV_SYNC_EXTRA_ARGS}" && \
-    uv sync --frozen --no-dev --extra easyocr --extra rapidocr ${UV_SYNC_EXTRA_ARGS}
+    echo "Running final sync: uv sync --frozen --no-dev --extra ui --extra easyocr --extra rapidocr ${UV_SYNC_EXTRA_ARGS}" && \
+    uv sync --frozen --no-dev --extra ui --extra easyocr --extra rapidocr ${UV_SYNC_EXTRA_ARGS}
 
 # Install custom docling wheel (overrides the PyPI version)
 # Use --no-deps to avoid re-resolving dependencies (which would pull GPU torch)
