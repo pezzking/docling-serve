@@ -54,9 +54,8 @@ RUN --mount=from=uv_stage,source=/uv,target=/bin/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     umask 002 && \
-    UV_SYNC_ARGS="--frozen --no-install-project --no-dev --all-extras" && \
-    uv sync ${UV_SYNC_ARGS} ${UV_SYNC_EXTRA_ARGS} --no-extra flash-attn && \
-    FLASH_ATTENTION_SKIP_CUDA_BUILD=TRUE uv sync ${UV_SYNC_ARGS} ${UV_SYNC_EXTRA_ARGS} --no-build-isolation-package=flash-attn
+    UV_SYNC_ARGS="--frozen --no-install-project --no-dev --extra easyocr --extra rapidocr" && \
+    uv sync ${UV_SYNC_ARGS} ${UV_SYNC_EXTRA_ARGS}
 
 # Models are mounted via PVC at runtime - skip downloading to reduce image size
 # ARG MODELS_LIST="layout tableformer picture_classifier rapidocr easyocr"
@@ -74,7 +73,7 @@ RUN --mount=from=uv_stage,source=/uv,target=/bin/uv \
     --mount=type=cache,target=/opt/app-root/src/.cache/uv,uid=1001 \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    umask 002 && uv sync --frozen --no-dev --all-extras ${UV_SYNC_EXTRA_ARGS}
+    umask 002 && uv sync --frozen --no-dev --extra easyocr --extra rapidocr ${UV_SYNC_EXTRA_ARGS}
 
 # Install custom docling wheel (overrides the PyPI version)
 RUN --mount=from=uv_stage,source=/uv,target=/bin/uv \
