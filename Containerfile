@@ -80,9 +80,10 @@ RUN --mount=from=uv_stage,source=/uv,target=/bin/uv \
     uv sync --frozen --no-dev --extra easyocr --extra rapidocr ${UV_SYNC_EXTRA_ARGS}
 
 # Install custom docling wheel (overrides the PyPI version)
+# Use --no-deps to avoid re-resolving dependencies (which would pull GPU torch)
 RUN --mount=from=uv_stage,source=/uv,target=/bin/uv \
     if ls ./custom-wheels/*.whl 1> /dev/null 2>&1; then \
-        uv pip install --force-reinstall ./custom-wheels/*.whl; \
+        uv pip install --no-deps --force-reinstall ./custom-wheels/*.whl; \
     fi
 
 EXPOSE 5001
