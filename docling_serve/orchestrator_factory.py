@@ -77,11 +77,7 @@ class RedisTaskStatusMixin:
             self.tasks[task_id] = rq_task
 
             # Track completed tasks for LRU eviction
-            if rq_task.task_status in [
-                TaskStatus.SUCCESS,
-                TaskStatus.FAILURE,
-                TaskStatus.PARTIAL_SUCCESS,
-            ]:
+            if rq_task.task_status in [TaskStatus.SUCCESS, TaskStatus.FAILURE]:
                 self._mark_task_completed(task_id)
 
             # Store/update in Redis for other instances
@@ -112,7 +108,6 @@ class RedisTaskStatusMixin:
                     if fresh_rq_task.task_status in [
                         TaskStatus.SUCCESS,
                         TaskStatus.FAILURE,
-                        TaskStatus.PARTIAL_SUCCESS,
                     ]:
                         self._mark_task_completed(task_id)
                     return fresh_rq_task
@@ -120,11 +115,7 @@ class RedisTaskStatusMixin:
                     _log.debug(f"Task {task_id} status consistent")
 
             # Track completed tasks for LRU eviction
-            if task.task_status in [
-                TaskStatus.SUCCESS,
-                TaskStatus.FAILURE,
-                TaskStatus.PARTIAL_SUCCESS,
-            ]:
+            if task.task_status in [TaskStatus.SUCCESS, TaskStatus.FAILURE]:
                 self._mark_task_completed(task_id)
             return task
 
@@ -136,11 +127,7 @@ class RedisTaskStatusMixin:
             # Store in Redis for other instances to find
             await self._store_task_in_redis(parent_task)
             # Track completed tasks for LRU eviction
-            if parent_task.task_status in [
-                TaskStatus.SUCCESS,
-                TaskStatus.FAILURE,
-                TaskStatus.PARTIAL_SUCCESS,
-            ]:
+            if parent_task.task_status in [TaskStatus.SUCCESS, TaskStatus.FAILURE]:
                 self._mark_task_completed(task_id)
             return parent_task
         except TaskNotFoundError:
