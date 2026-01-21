@@ -1,5 +1,6 @@
 """Instrumented RQ worker with OpenTelemetry tracing support."""
 
+import gc
 import logging
 from pathlib import Path
 
@@ -15,6 +16,9 @@ from docling_jobkit.orchestrators.rq.worker import CustomRQWorker
 from docling_serve.rq_instrumentation import extract_trace_context
 
 logger = logging.getLogger(__name__)
+
+# Clear pipeline cache every N jobs to prevent memory accumulation
+JOBS_BETWEEN_CACHE_CLEAR = 10
 
 
 class InstrumentedRQWorker(CustomRQWorker):
@@ -36,6 +40,7 @@ class InstrumentedRQWorker(CustomRQWorker):
             **kwargs,
         )
         self.tracer = trace.get_tracer(__name__)
+        self._jobs_since_cache_clear = 0
 
     def perform_job(self, job, queue):
         """
@@ -96,6 +101,11 @@ class InstrumentedRQWorker(CustomRQWorker):
                 span.set_status(Status(StatusCode.OK))
                 logger.debug(f"Job {job.id} completed successfully")
 
+                # Periodic memory cleanup
+                self._jobs_since_cache_clear += 1
+                if self._jobs_since_cache_clear >= JOBS_BETWEEN_CACHE_CLEAR:
+                    self._clear_caches()
+
                 return result
 
             except Exception as e:
@@ -103,4 +113,26 @@ class InstrumentedRQWorker(CustomRQWorker):
                 logger.error(f"Job {job.id} failed: {e}", exc_info=True)
                 span.record_exception(e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
+
+                # Also clear caches on error to free any partially loaded resources
+                self._jobs_since_cache_clear += 1
+                if self._jobs_since_cache_clear >= JOBS_BETWEEN_CACHE_CLEAR:
+                    self._clear_caches()
+
                 raise
+
+    def _clear_caches(self) -> None:
+        """Clear pipeline caches to free memory."""
+        logger.info("Clearing pipeline caches to free memory")
+        self._jobs_since_cache_clear = 0
+
+        # Clear the docling document converter pipeline cache
+        if hasattr(self.conversion_manager, "converter"):
+            converter = self.conversion_manager.converter
+            if hasattr(converter, "clear_pipeline_cache"):
+                converter.clear_pipeline_cache()
+                logger.debug("Cleared DocumentConverter pipeline cache")
+
+        # Force garbage collection
+        gc.collect()
+        logger.debug("Garbage collection completed")

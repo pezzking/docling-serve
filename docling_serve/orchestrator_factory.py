@@ -1,5 +1,6 @@
 import json
 import logging
+from collections import OrderedDict
 from functools import lru_cache
 from typing import Any
 
@@ -17,6 +18,10 @@ from docling_serve.storage import get_scratch
 
 _log = logging.getLogger(__name__)
 
+# Maximum number of completed tasks to keep in memory
+# Completed tasks are evicted LRU-style when this limit is reached
+MAX_COMPLETED_TASKS_IN_MEMORY = 1000
+
 
 class RedisTaskStatusMixin:
     tasks: dict[str, Task]
@@ -31,6 +36,28 @@ class RedisTaskStatusMixin:
             max_connections=10,
             socket_timeout=2.0,
         )
+        # Track completed task IDs in order for LRU eviction
+        self._completed_task_order: OrderedDict[str, bool] = OrderedDict()
+
+    def _evict_old_completed_tasks(self) -> None:
+        """Evict oldest completed tasks when memory limit is reached."""
+        while len(self._completed_task_order) > MAX_COMPLETED_TASKS_IN_MEMORY:
+            oldest_task_id, _ = self._completed_task_order.popitem(last=False)
+            # Remove from in-memory stores
+            if oldest_task_id in self.tasks:
+                del self.tasks[oldest_task_id]
+            if oldest_task_id in self._task_result_keys:
+                del self._task_result_keys[oldest_task_id]
+            _log.debug(f"Evicted completed task {oldest_task_id} from memory")
+
+    def _mark_task_completed(self, task_id: str) -> None:
+        """Mark a task as completed and track for LRU eviction."""
+        if task_id not in self._completed_task_order:
+            self._completed_task_order[task_id] = True
+            self._evict_old_completed_tasks()
+        else:
+            # Move to end (most recently accessed)
+            self._completed_task_order.move_to_end(task_id)
 
     async def task_status(self, task_id: str, wait: float = 0.0) -> Task:
         """
@@ -48,6 +75,14 @@ class RedisTaskStatusMixin:
 
             # Update memory registry
             self.tasks[task_id] = rq_task
+
+            # Track completed tasks for LRU eviction
+            if rq_task.task_status in [
+                TaskStatus.SUCCESS,
+                TaskStatus.FAILURE,
+                TaskStatus.PARTIAL_SUCCESS,
+            ]:
+                self._mark_task_completed(task_id)
 
             # Store/update in Redis for other instances
             await self._store_task_in_redis(rq_task)
@@ -73,10 +108,24 @@ class RedisTaskStatusMixin:
                     # Update memory and Redis with fresh status
                     self.tasks[task_id] = fresh_rq_task
                     await self._store_task_in_redis(fresh_rq_task)
+                    # Track completed tasks for LRU eviction
+                    if fresh_rq_task.task_status in [
+                        TaskStatus.SUCCESS,
+                        TaskStatus.FAILURE,
+                        TaskStatus.PARTIAL_SUCCESS,
+                    ]:
+                        self._mark_task_completed(task_id)
                     return fresh_rq_task
                 else:
                     _log.debug(f"Task {task_id} status consistent")
 
+            # Track completed tasks for LRU eviction
+            if task.task_status in [
+                TaskStatus.SUCCESS,
+                TaskStatus.FAILURE,
+                TaskStatus.PARTIAL_SUCCESS,
+            ]:
+                self._mark_task_completed(task_id)
             return task
 
         # Fall back to parent implementation
@@ -86,6 +135,13 @@ class RedisTaskStatusMixin:
 
             # Store in Redis for other instances to find
             await self._store_task_in_redis(parent_task)
+            # Track completed tasks for LRU eviction
+            if parent_task.task_status in [
+                TaskStatus.SUCCESS,
+                TaskStatus.FAILURE,
+                TaskStatus.PARTIAL_SUCCESS,
+            ]:
+                self._mark_task_completed(task_id)
             return parent_task
         except TaskNotFoundError:
             _log.warning(f"Task {task_id} not found")

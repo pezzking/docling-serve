@@ -13,7 +13,7 @@ FROM ${BASE_IMAGE} AS docling-base
 USER 0
 
 RUN --mount=type=bind,source=os-packages.txt,target=/tmp/os-packages.txt \
-    dnf -y install --best --nodocs --setopt=install_weak_deps=False dnf-plugins-core && \
+    dnf -y install --best --nodocs --setopt=install_weak_deps=False dnf-plugins-core epel-release && \
     dnf config-manager --best --nodocs --setopt=install_weak_deps=False --save && \
     dnf config-manager --enable crb && \
     dnf -y update && \
@@ -45,7 +45,9 @@ ENV \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/opt/app-root \
-    DOCLING_SERVE_ARTIFACTS_PATH=/opt/app-root/src/.cache/docling/models
+    DOCLING_SERVE_ARTIFACTS_PATH=/opt/app-root/src/.cache/docling/models \
+    LD_PRELOAD=/usr/lib64/libjemalloc.so.2 \
+    MALLOC_CONF=background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000
 
 ARG UV_SYNC_EXTRA_ARGS
 
