@@ -381,6 +381,13 @@ def rq_worker() -> Any:
     from docling_serve.rq_instrumentation import setup_rq_worker_instrumentation
     from docling_serve.rq_worker_instrumented import InstrumentedRQWorker
 
+    # Configure logging for the worker process at INFO level
+    # This ensures our custom logging (TASK START, DOC, etc.) is visible
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s:%(name)s:%(message)s",
+    )
+
     # Set up OpenTelemetry for the worker process
     if docling_serve_settings.otel_enable_traces:
         setup_rq_worker_instrumentation()
