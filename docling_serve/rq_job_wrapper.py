@@ -155,10 +155,12 @@ def instrumented_docling_task(  # noqa: C901
                         "docling.ocr_engine", task_logger.metrics.ocr_engine
                     )
 
-                conv_results = conversion_manager.convert_documents(
-                    sources=convert_sources,
-                    options=task.convert_options,
-                    headers=headers,
+                conv_results = list(
+                    conversion_manager.convert_documents(
+                        sources=convert_sources,
+                        options=task.convert_options,
+                        headers=headers,
+                    )
                 )
 
             # Log individual document results
