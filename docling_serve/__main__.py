@@ -367,6 +367,20 @@ def rq_worker() -> Any:
     """
     Run the [bold]Docling JobKit[/bold] RQ worker.
     """
+    # Configure logging FIRST, before any imports that might set up their own logging
+    # This ensures our custom logging (TASK START, DOC, etc.) is visible
+    # Using force=True to override any existing configuration
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s:%(name)s:%(message)s",
+        force=True,
+    )
+    # Explicitly set our module loggers to INFO level
+    logging.getLogger("docling_serve").setLevel(logging.INFO)
+    logging.getLogger("docling_serve.worker_logging").setLevel(logging.INFO)
+    logging.getLogger("docling_serve.rq_job_wrapper").setLevel(logging.INFO)
+    logging.getLogger("docling_serve.rq_worker_instrumented").setLevel(logging.INFO)
+
     import tempfile
     from pathlib import Path
 
@@ -380,13 +394,6 @@ def rq_worker() -> Any:
 
     from docling_serve.rq_instrumentation import setup_rq_worker_instrumentation
     from docling_serve.rq_worker_instrumented import InstrumentedRQWorker
-
-    # Configure logging for the worker process at INFO level
-    # This ensures our custom logging (TASK START, DOC, etc.) is visible
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(levelname)s:%(name)s:%(message)s",
-    )
 
     # Set up OpenTelemetry for the worker process
     if docling_serve_settings.otel_enable_traces:
