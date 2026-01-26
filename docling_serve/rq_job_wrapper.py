@@ -24,6 +24,11 @@ from docling_jobkit.orchestrators.rq.orchestrator import (
 from docling_jobkit.orchestrators.rq.worker import make_msgpack_safe
 
 from docling_serve.rq_instrumentation import extract_trace_context
+from docling_serve.worker_logging import (
+    TaskLogger,
+    format_size,
+    log_job_started,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +60,9 @@ def instrumented_docling_task(  # noqa: C901
     # Get tracer
     tracer = trace.get_tracer(__name__)
 
+    # Initialize task logger for human-readable metrics
+    task_logger = TaskLogger(task, logger)
+
     # Create main job span with parent context (this creates the link to the API trace)
     with tracer.start_as_current_span(
         "rq.job.docling_task",
@@ -73,11 +81,18 @@ def instrumented_docling_task(  # noqa: C901
             span.set_attribute("docling.task.type", str(task.task_type.value))
             span.set_attribute("docling.task.num_sources", len(task.sources))
 
-            logger.info(
-                f"Executing docling_task {task_id} with "
-                f"trace_id={span.get_span_context().trace_id:032x} "
-                f"span_id={span.get_span_context().span_id:016x}"
+            # Log job start with trace info
+            trace_id = f"{span.get_span_context().trace_id:032x}"
+            log_job_started(
+                job_id=job.id,
+                task_id=task_id,
+                queue_name=job.origin,
+                trace_id=trace_id,
+                log=logger,
             )
+
+            # Start task logging (logs task details and sources)
+            task_logger.start()
 
             # Notify task started
             with tracer.start_as_current_span("notify.task_started"):
@@ -130,11 +145,33 @@ def instrumented_docling_task(  # noqa: C901
                 conv_span.set_attribute("num_sources", len(convert_sources))
                 conv_span.set_attribute("has_headers", headers is not None)
 
+                # Add pipeline info to span
+                if task_logger.metrics.pipeline:
+                    conv_span.set_attribute(
+                        "docling.pipeline", task_logger.metrics.pipeline
+                    )
+                if task_logger.metrics.ocr_engine:
+                    conv_span.set_attribute(
+                        "docling.ocr_engine", task_logger.metrics.ocr_engine
+                    )
+
                 conv_results = conversion_manager.convert_documents(
                     sources=convert_sources,
                     options=task.convert_options,
                     headers=headers,
                 )
+
+            # Log individual document results
+            with tracer.start_as_current_span("log_document_results") as log_span:
+                for result in conv_results:
+                    task_logger.log_document_result(result)
+                log_span.set_attribute(
+                    "docling.total_pages", task_logger.metrics.total_pages
+                )
+                log_span.set_attribute(
+                    "docling.succeeded", task_logger.metrics.succeeded
+                )
+                log_span.set_attribute("docling.failed", task_logger.metrics.failed)
 
             # Result processing with detailed tracing
             with tracer.start_as_current_span("process_results") as proc_span:
@@ -165,6 +202,13 @@ def instrumented_docling_task(  # noqa: C901
                 conn.setex(result_key, orchestrator_config.results_ttl, packed)
                 store_span.set_attribute("result_key", result_key)
 
+                # Log result size
+                logger.debug(
+                    f"[RESULT] task_id={task_id} | "
+                    f"result_size={format_size(len(packed))} | "
+                    f"ttl={orchestrator_config.results_ttl}s"
+                )
+
             # Notify task success
             with tracer.start_as_current_span("notify.task_success"):
                 conn.publish(
@@ -183,7 +227,9 @@ def instrumented_docling_task(  # noqa: C901
 
             # Mark span as successful
             span.set_status(Status(StatusCode.OK))
-            logger.info(f"Docling task {task_id} completed successfully")
+
+            # Log task completion with metrics
+            task_logger.finish(success=True)
 
             return result_key
 
@@ -208,8 +254,10 @@ def instrumented_docling_task(  # noqa: C901
                 except Exception:
                     pass
 
+            # Log task error with metrics
+            task_logger.log_error(e)
+
             # Record exception and mark span as failed
-            logger.error(f"Docling task {task_id} failed: {e}", exc_info=True)
             span.record_exception(e)
             span.set_status(Status(StatusCode.ERROR, str(e)))
             raise
