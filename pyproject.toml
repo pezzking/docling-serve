@@ -1,6 +1,6 @@
 [project]
 name = "docling-serve"
-version = "1.1.7"  # DO NOT EDIT, updated automatically
+version = "1.1.8"  # DO NOT EDIT, updated automatically
 description = "Running Docling as a service"
 license = {text = "MIT"}
 authors = [
@@ -52,6 +52,8 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.57b0,<0.58",
     "opentelemetry-exporter-prometheus>=0.57b0",
     "prometheus-client>=0.21.0",
+    "objgraph>=3.6.0",  # Memory profiling - object graph analysis
+    "psutil>=5.9.0",  # Memory profiling - process stats
 ]
 
 [project.optional-dependencies]
