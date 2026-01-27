@@ -431,9 +431,12 @@ def rq_worker() -> Any:
         orchestrator_config=rq_config,
         cm_config=cm_config,
         scratch_dir=scratch_dir,
+        jobs_between_cache_clear=docling_serve_settings.rq_jobs_between_cache_clear,
     )
 
-    worker.work()
+    # max_jobs=0 means unlimited in RQ
+    max_jobs = docling_serve_settings.rq_max_jobs or None
+    worker.work(max_jobs=max_jobs)
 
 
 def main() -> None:

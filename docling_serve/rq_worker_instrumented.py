@@ -2,6 +2,7 @@
 
 import gc
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -24,8 +25,33 @@ from docling_serve.worker_logging import (
 
 logger = logging.getLogger(__name__)
 
-# Clear pipeline cache every N jobs to prevent memory accumulation
-JOBS_BETWEEN_CACHE_CLEAR = 10
+# Default value; can be overridden via jobs_between_cache_clear parameter
+DEFAULT_JOBS_BETWEEN_CACHE_CLEAR = 10
+
+
+def _get_memory_mb() -> float:
+    """Get current process memory usage in MB (RSS)."""
+    try:
+        # Works on Linux (reads from /proc)
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    # VmRSS is in kB
+                    return int(line.split()[1]) / 1024
+    except FileNotFoundError:
+        pass
+
+    # Fallback for macOS/other - use resource module
+    try:
+        import resource
+
+        # ru_maxrss is in bytes on macOS, KB on Linux
+        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if os.uname().sysname == "Darwin":
+            return usage / (1024 * 1024)  # bytes to MB
+        return usage / 1024  # KB to MB
+    except Exception:
+        return 0.0
 
 
 class InstrumentedRQWorker(CustomRQWorker):
@@ -37,6 +63,7 @@ class InstrumentedRQWorker(CustomRQWorker):
         orchestrator_config: RQOrchestratorConfig,
         cm_config: DoclingConverterManagerConfig,
         scratch_dir: Path,
+        jobs_between_cache_clear: int = DEFAULT_JOBS_BETWEEN_CACHE_CLEAR,
         **kwargs,
     ):
         super().__init__(
@@ -47,6 +74,7 @@ class InstrumentedRQWorker(CustomRQWorker):
             **kwargs,
         )
         self.tracer = trace.get_tracer(__name__)
+        self._jobs_between_cache_clear = jobs_between_cache_clear
         self._jobs_since_cache_clear = 0
         self._total_jobs_processed = 0
         self._worker_start_time = time.time()
@@ -57,7 +85,7 @@ class InstrumentedRQWorker(CustomRQWorker):
             worker_name=kwargs.get("name", "docling-worker"),
             queue_names=queue_names,
             config={
-                "jobs_between_cache_clear": JOBS_BETWEEN_CACHE_CLEAR,
+                "jobs_between_cache_clear": self._jobs_between_cache_clear,
                 "scratch_dir": str(scratch_dir),
             },
             log=logger,
@@ -145,7 +173,15 @@ class InstrumentedRQWorker(CustomRQWorker):
                 # Update counters and periodic memory cleanup
                 self._total_jobs_processed += 1
                 self._jobs_since_cache_clear += 1
-                if self._jobs_since_cache_clear >= JOBS_BETWEEN_CACHE_CLEAR:
+
+                # Log memory usage after each job
+                mem_mb = _get_memory_mb()
+                logger.info(
+                    f"[MEMORY] job_id={job.id} | rss={mem_mb:.0f}MB | "
+                    f"jobs_total={self._total_jobs_processed}"
+                )
+
+                if self._jobs_since_cache_clear >= self._jobs_between_cache_clear:
                     self._clear_caches()
 
                 return result
@@ -168,7 +204,7 @@ class InstrumentedRQWorker(CustomRQWorker):
 
                 # Also clear caches on error to free partially loaded resources
                 self._jobs_since_cache_clear += 1
-                if self._jobs_since_cache_clear >= JOBS_BETWEEN_CACHE_CLEAR:
+                if self._jobs_since_cache_clear >= self._jobs_between_cache_clear:
                     self._clear_caches()
 
                 raise
@@ -183,12 +219,37 @@ class InstrumentedRQWorker(CustomRQWorker):
             converter = self.conversion_manager.converter
             if hasattr(converter, "clear_pipeline_cache"):
                 converter.clear_pipeline_cache()
+            # Also clear initialized pipelines dict if it exists
+            if hasattr(converter, "_initialized_pipelines"):
+                converter._initialized_pipelines.clear()
 
-        # Force garbage collection
+        # Clear any LRU caches in the conversion manager
+        if hasattr(self.conversion_manager, "_options_cache"):
+            self.conversion_manager._options_cache.clear()
+
+        # Try to release PyTorch memory if available
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            # Also try MPS (Apple Silicon)
+            if hasattr(torch, "mps") and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+        except ImportError:
+            pass
+
+        # Force garbage collection (run twice to handle ref cycles)
+        mem_before = _get_memory_mb()
         gc.collect()
+        gc.collect()
+        mem_after = _get_memory_mb()
 
-        # Log cache clear with structured logging
-        log_cache_clear(jobs_since_clear=jobs_cleared, log=logger)
+        # Log cache clear with memory info
+        logger.info(
+            f"[CACHE CLEAR] jobs_since_last_clear={jobs_cleared} | "
+            f"memory={mem_after:.0f}MB (freed {mem_before - mem_after:.0f}MB)"
+        )
 
     def worker_status(self) -> dict:
         """Return current worker status for logging/monitoring."""

@@ -91,6 +91,10 @@ class DoclingServeSettings(BaseSettings):
 
     eng_kfp_experimental: bool = False
 
+    # RQ Worker settings
+    rq_jobs_between_cache_clear: int = 10
+    rq_max_jobs: int = 0  # 0 = unlimited; worker exits after N jobs
+
     # OpenTelemetry settings
     otel_enable_metrics: bool = True
     otel_enable_traces: bool = False
