@@ -6,7 +6,7 @@ import os
 import time
 from pathlib import Path
 
-from opentelemetry import trace
+from opentelemetry import metrics, trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from docling_jobkit.convert.manager import (
@@ -15,6 +15,7 @@ from docling_jobkit.convert.manager import (
 from docling_jobkit.orchestrators.rq.orchestrator import RQOrchestratorConfig
 from docling_jobkit.orchestrators.rq.worker import CustomRQWorker
 
+from docling_serve.memory_profiler import MemoryProfiler, get_memory_profiler
 from docling_serve.rq_instrumentation import extract_trace_context
 from docling_serve.worker_logging import (
     format_duration,
@@ -63,6 +64,7 @@ class InstrumentedRQWorker(CustomRQWorker):
         cm_config: DoclingConverterManagerConfig,
         scratch_dir: Path,
         jobs_between_cache_clear: int = DEFAULT_JOBS_BETWEEN_CACHE_CLEAR,
+        memory_profiling: bool = False,
         **kwargs,
     ):
         super().__init__(
@@ -78,6 +80,24 @@ class InstrumentedRQWorker(CustomRQWorker):
         self._total_jobs_processed = 0
         self._worker_start_time = time.time()
 
+        # Initialize memory profiler
+        self._memory_profiler = get_memory_profiler()
+        if memory_profiling and not self._memory_profiler.enabled:
+            # Override with explicit flag if passed
+            self._memory_profiler = MemoryProfiler(
+                enabled=True,
+                top_n=int(os.environ.get("DOCLING_SERVE_MEMORY_PROFILING_TOP_N", "10")),
+                use_tracemalloc=True,
+                use_objgraph=True,
+            )
+
+        # Set up OTEL metrics for memory tracking
+        try:
+            meter = metrics.get_meter(__name__)
+            self._memory_profiler.setup_otel_metrics(meter)
+        except Exception as e:
+            logger.debug(f"Could not set up OTEL metrics for memory profiler: {e}")
+
         # Log worker startup
         queue_names = [q.name for q in kwargs.get("queues", [])]
         log_worker_startup(
@@ -86,6 +106,7 @@ class InstrumentedRQWorker(CustomRQWorker):
             config={
                 "jobs_between_cache_clear": self._jobs_between_cache_clear,
                 "scratch_dir": str(scratch_dir),
+                "memory_profiling": self._memory_profiler.enabled,
             },
             log=logger,
         )
@@ -173,12 +194,12 @@ class InstrumentedRQWorker(CustomRQWorker):
                 self._total_jobs_processed += 1
                 self._jobs_since_cache_clear += 1
 
-                # Log memory usage after each job
-                mem_mb = _get_memory_mb()
-                logger.info(
-                    f"[MEMORY] job_id={job.id} | rss={mem_mb:.0f}MB | "
-                    f"jobs_total={self._total_jobs_processed}"
+                # Take memory snapshot and log
+                snapshot = self._memory_profiler.take_snapshot(
+                    job_id=job.id,
+                    jobs_total=self._total_jobs_processed,
                 )
+                self._memory_profiler.log_snapshot(snapshot)
 
                 if self._jobs_since_cache_clear >= self._jobs_between_cache_clear:
                     self._clear_caches()
@@ -361,4 +382,24 @@ class InstrumentedRQWorker(CustomRQWorker):
             "jobs_since_cache_clear": self._jobs_since_cache_clear,
             "uptime": format_duration(uptime),
             "uptime_seconds": round(uptime, 2),
+            "memory_rss_mb": _get_memory_mb(),
         }
+
+    def get_memory_diagnostics(self) -> dict:
+        """Get detailed memory diagnostics for debugging.
+
+        Returns a comprehensive report including:
+        - Current memory usage
+        - Top allocations (if tracemalloc enabled)
+        - Object counts and growth (if objgraph enabled)
+        - Memory trends over time
+        """
+        return self._memory_profiler.get_diagnostic_report()
+
+    def find_memory_leaks(self) -> list:
+        """Find potentially leaking objects with backref chains.
+
+        Useful for debugging memory growth by identifying objects
+        that are accumulating references.
+        """
+        return self._memory_profiler.find_leaking_objects()

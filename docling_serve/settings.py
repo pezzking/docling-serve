@@ -102,6 +102,12 @@ class DoclingServeSettings(BaseSettings):
     otel_enable_otlp_metrics: bool = False
     otel_service_name: str = "docling-serve"
 
+    # Memory profiling settings (for debugging memory leaks)
+    memory_profiling: bool = False  # Enable detailed memory profiling
+    memory_profiling_top_n: int = 10  # Number of top allocations to track
+    memory_profiling_tracemalloc: bool = True  # Use tracemalloc for allocation tracking
+    memory_profiling_objgraph: bool = True  # Use objgraph for object counting
+
     @model_validator(mode="after")
     def engine_settings(self) -> Self:
         # Validate KFP engine settings

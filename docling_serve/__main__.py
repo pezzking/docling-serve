@@ -432,6 +432,7 @@ def rq_worker() -> Any:
         cm_config=cm_config,
         scratch_dir=scratch_dir,
         jobs_between_cache_clear=docling_serve_settings.rq_jobs_between_cache_clear,
+        memory_profiling=docling_serve_settings.memory_profiling,
     )
 
     # max_jobs=0 means unlimited in RQ
