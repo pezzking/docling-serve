@@ -18,7 +18,6 @@ from docling_jobkit.orchestrators.rq.worker import CustomRQWorker
 from docling_serve.rq_instrumentation import extract_trace_context
 from docling_serve.worker_logging import (
     format_duration,
-    log_cache_clear,
     log_job_finished,
     log_worker_startup,
 )
@@ -33,7 +32,7 @@ def _get_memory_mb() -> float:
     """Get current process memory usage in MB (RSS)."""
     try:
         # Works on Linux (reads from /proc)
-        with open("/proc/self/status", "r") as f:
+        with open("/proc/self/status") as f:
             for line in f:
                 if line.startswith("VmRSS:"):
                     # VmRSS is in kB
@@ -210,46 +209,149 @@ class InstrumentedRQWorker(CustomRQWorker):
                 raise
 
     def _clear_caches(self) -> None:
-        """Clear pipeline caches to free memory."""
+        """Clear pipeline caches to free memory.
+
+        This method properly clears:
+        1. The DoclingConverterManager's LRU cache of DocumentConverters
+        2. Each cached converter's initialized_pipelines dict
+        3. Model references within pipelines (build_pipe, enrichment_pipe)
+        4. PyTorch GPU/MPS memory caches
+        5. Python garbage collection
+        """
         jobs_cleared = self._jobs_since_cache_clear
         self._jobs_since_cache_clear = 0
+        mem_before = _get_memory_mb()
 
-        # Clear the docling document converter pipeline cache
-        if hasattr(self.conversion_manager, "converter"):
-            converter = self.conversion_manager.converter
-            if hasattr(converter, "clear_pipeline_cache"):
-                converter.clear_pipeline_cache()
-            # Also clear initialized pipelines dict if it exists
-            if hasattr(converter, "_initialized_pipelines"):
-                converter._initialized_pipelines.clear()
+        pipelines_cleared = 0
+        converters_cleared = 0
 
-        # Clear any LRU caches in the conversion manager
-        if hasattr(self.conversion_manager, "_options_cache"):
-            self.conversion_manager._options_cache.clear()
+        # Step 1: Clear initialized pipelines from all cached converters
+        # The _get_converter_from_hash is an LRU cache containing DocumentConverters
+        if hasattr(self.conversion_manager, "_get_converter_from_hash"):
+            cache_func = self.conversion_manager._get_converter_from_hash
+            # Access the cache info to see what's cached
+            if hasattr(cache_func, "cache_info"):
+                cache_info = cache_func.cache_info()
+                converters_cleared = cache_info.currsize
 
-        # Try to release PyTorch memory if available
+            # Get cached converters before clearing the LRU cache
+            # We need to clear their pipelines first to release model references
+            if hasattr(cache_func, "cache_clear"):
+                # The cache stores converters by options hash
+                # Access internal cache dict if available (Python 3.9+)
+                try:
+                    # Try to access cached items to clear their pipelines
+                    if hasattr(cache_func, "__wrapped__"):
+                        # For each converter in the options_map, clear its pipelines
+                        options_map = getattr(
+                            self.conversion_manager, "_options_map", {}
+                        )
+                        for options_hash in list(options_map.keys()):
+                            try:
+                                converter = cache_func(options_hash)
+                                pipelines_cleared += self._clear_converter_pipelines(
+                                    converter
+                                )
+                            except (KeyError, TypeError):
+                                pass
+                except Exception as e:
+                    logger.debug(f"Could not access cached converters: {e}")
+
+        # Step 2: Clear the LRU cache itself (removes converter references)
+        if hasattr(self.conversion_manager, "clear_cache"):
+            self.conversion_manager.clear_cache()
+
+        # Step 3: Clear the options map to prevent stale references
+        if hasattr(self.conversion_manager, "_options_map"):
+            self.conversion_manager._options_map.clear()
+
+        # Step 4: Release PyTorch memory
         try:
             import torch
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()
             # Also try MPS (Apple Silicon)
-            if hasattr(torch, "mps") and torch.backends.mps.is_available():
-                torch.mps.empty_cache()
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                if hasattr(torch.mps, "empty_cache"):
+                    torch.mps.empty_cache()
         except ImportError:
             pass
 
-        # Force garbage collection (run twice to handle ref cycles)
-        mem_before = _get_memory_mb()
-        gc.collect()
-        gc.collect()
+        # Step 5: Force garbage collection (run multiple times for ref cycles)
+        gc.collect(generation=0)
+        gc.collect(generation=1)
+        gc.collect(generation=2)
+
         mem_after = _get_memory_mb()
 
-        # Log cache clear with memory info
+        # Log cache clear with detailed info
         logger.info(
             f"[CACHE CLEAR] jobs_since_last_clear={jobs_cleared} | "
+            f"converters={converters_cleared} | pipelines={pipelines_cleared} | "
             f"memory={mem_after:.0f}MB (freed {mem_before - mem_after:.0f}MB)"
         )
+
+    def _clear_converter_pipelines(self, converter) -> int:
+        """Clear all initialized pipelines from a DocumentConverter.
+
+        Returns the number of pipelines cleared.
+        """
+        cleared = 0
+
+        # Clear the initialized_pipelines dict (note: no underscore prefix)
+        if hasattr(converter, "initialized_pipelines"):
+            pipelines = converter.initialized_pipelines
+            for key, pipeline in list(pipelines.items()):
+                # Clear model references in the pipeline
+                self._clear_pipeline_models(pipeline)
+                cleared += 1
+            pipelines.clear()
+
+        return cleared
+
+    def _clear_pipeline_models(self, pipeline) -> None:
+        """Clear model references from a pipeline to help garbage collection."""
+        # Clear build_pipe models (OCR, layout, etc.)
+        if hasattr(pipeline, "build_pipe") and pipeline.build_pipe:
+            for i, model in enumerate(pipeline.build_pipe):
+                # Try to delete heavy attributes from models
+                self._clear_model_internals(model)
+            pipeline.build_pipe.clear()
+
+        # Clear enrichment_pipe models (code/formula, picture classifier, etc.)
+        if hasattr(pipeline, "enrichment_pipe") and pipeline.enrichment_pipe:
+            for model in pipeline.enrichment_pipe:
+                self._clear_model_internals(model)
+            pipeline.enrichment_pipe.clear()
+
+    def _clear_model_internals(self, model) -> None:
+        """Attempt to clear internal model weights and caches."""
+        # Common attributes that hold heavy data
+        heavy_attrs = [
+            "model",
+            "predictor",
+            "layout_predictor",
+            "table_predictor",
+            "reader",  # EasyOCR reader
+            "detector",
+            "recognizer",
+            "net",
+            "network",
+        ]
+
+        for attr in heavy_attrs:
+            if hasattr(model, attr):
+                try:
+                    # Delete the attribute to release the reference
+                    delattr(model, attr)
+                except (AttributeError, TypeError):
+                    # Some attributes may be read-only or properties
+                    try:
+                        setattr(model, attr, None)
+                    except (AttributeError, TypeError):
+                        pass
 
     def worker_status(self) -> dict:
         """Return current worker status for logging/monitoring."""
